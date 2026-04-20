@@ -2,21 +2,22 @@ name: Security Scan
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
 
 permissions:
   contents: read
   security-events: write
 
 jobs:
+
   sast-semgrep:
     name: SAST - Semgrep
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install Semgrep
@@ -32,38 +33,117 @@ jobs:
             --output semgrep.sarif
 
       - name: Upload SARIF to GitHub
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: semgrep.sarif
+
+      - name: Upload SARIF artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-sarif
+          path: semgrep.sarif
+
 
   sca-snyk:
     name: SCA - Snyk
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Snyk CLI
+      - name: Debug files
+        run: |
+          ls -lah
+          cat requirements.txt || echo "No requirements.txt found"
+
+      - name: Install Snyk
         run: npm install -g snyk
 
       - name: Authenticate Snyk
         run: snyk auth ${{ secrets.SNYK_SECRET }}
 
       - name: Run Snyk scan
-        run: snyk test --file=requirements.txt --sarif > snyk.sarif
+        run: |
+          snyk test \
+            --file=requirements.txt \
+            --package-manager=pip \
+            --sarif-file-output=snyk.sarif
         continue-on-error: true
 
       - name: Upload SARIF to GitHub
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: snyk.sarif
 
+      - name: Upload SARIF artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: snyk-sarif
+          path: snyk.sarif
+
+
   report:
-    name: Consolidated Report
+    name: Generate Report
     runs-on: ubuntu-latest
     needs: [sast-semgrep, sca-snyk]
 
     steps:
-      - name: Generate report placeholder
-        run: echo "Security scans completed. Check Code Scanning tab."
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Download Semgrep SARIF
+        uses: actions/download-artifact@v4
+        with:
+          name: semgrep-sarif
+
+      - name: Download Snyk SARIF
+        uses: actions/download-artifact@v4
+        with:
+          name: snyk-sarif
+
+      - name: Generate RAPPORT_EXERCICE1.md
+        run: |
+          echo "# Rapport de sécurité" > RAPPORT_EXERCICE1.md
+          echo "" >> RAPPORT_EXERCICE1.md
+          echo "## Nombre de vulnérabilités par sévérité" >> RAPPORT_EXERCICE1.md
+
+          # Semgrep counts
+          if [ -f semgrep.sarif ]; then
+            SG_HIGH=$(jq '[.runs[].results[] | select(.level=="error")] | length' semgrep.sarif)
+            SG_MED=$(jq '[.runs[].results[] | select(.level=="warning")] | length' semgrep.sarif)
+            SG_LOW=$(jq '[.runs[].results[] | select(.level=="note")] | length' semgrep.sarif)
+          else
+            SG_HIGH=0
+            SG_MED=0
+            SG_LOW=0
+          fi
+
+          # Snyk counts
+          if [ -f snyk.sarif ]; then
+            SN_HIGH=$(jq '[.runs[].results[] | select(.level=="error")] | length' snyk.sarif)
+            SN_MED=$(jq '[.runs[].results[] | select(.level=="warning")] | length' snyk.sarif)
+            SN_LOW=$(jq '[.runs[].results[] | select(.level=="note")] | length' snyk.sarif)
+          else
+            SN_HIGH=0
+            SN_MED=0
+            SN_LOW=0
+          fi
+
+          TOTAL_HIGH=$((SG_HIGH + SN_HIGH))
+          TOTAL_MED=$((SG_MED + SN_MED))
+          TOTAL_LOW=$((SG_LOW + SN_LOW))
+
+          echo "" >> RAPPORT_EXERCICE1.md
+          echo "- High : $TOTAL_HIGH" >> RAPPORT_EXERCICE1.md
+          echo "- Medium : $TOTAL_MED" >> RAPPORT_EXERCICE1.md
+          echo "- Low : $TOTAL_LOW" >> RAPPORT_EXERCICE1.md
+
+      - name: Upload report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rapport-securite
+          path: RAPPORT_EXERCICE1.md
